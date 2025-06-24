@@ -33,12 +33,12 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 // Struktur untuk menyimpan informasi setiap timer
-typedef struct
-{
-  uint32_t remaining_seconds; // Waktu tersisa dalam detik
-  bool is_running;            // Status: true jika berjalan, false jika berhenti
-  bool is_finished;           // Status: true jika timer sudah selesai (mencapai 0)
-} TimerInfo_t;
+// typedef struct
+//{
+//  uint32_t remaining_seconds; // Waktu tersisa dalam detik
+//  bool is_running;            // Status: true jika berjalan, false jika berhenti
+//  bool is_finished;           // Status: true jika timer sudah selesai (mencapai 0)
+//} TimerInfo_t;
 
 // Mode operasi program
 typedef enum
@@ -61,12 +61,14 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define NUM_TIMERS 8 // Jumlah total timer
+#define NUM_TIMERS 8   // Jumlah total timer
+#define NUM_MATRICES 8 // Jumlah modul matriks yang di-cascade
 
 // Definisi untuk driver MAX7219
 #define MAX7219_CS_PORT MAX7219_CS_GPIO_Port
 #define MAX7219_CS_PIN MAX7219_CS_Pin
 
+#define MAX7219_REG_NO_OP 0x00
 #define MAX7219_REG_DECODE_MODE 0x09
 #define MAX7219_REG_INTENSITY 0x0A
 #define MAX7219_REG_SCAN_LIMIT 0x0B
@@ -183,10 +185,18 @@ void format_time(char *buffer, uint32_t total_seconds);
 void format_time_split(uint32_t total_seconds, uint32_t *h, uint32_t *m, uint32_t *s);
 
 // Prototipe Driver MAX7219
-void MAX7219_Send(uint8_t reg, uint8_t data);
+// void MAX7219_Send(uint8_t reg, uint8_t data);
+// void MAX7219_Init(void);
+// void MAX7219_Clear(void);
+// void MAX7219_DisplayNumber(uint32_t number);
+
+// ===================================================================
+// === PROTOTIPE DRIVER MAX7219 UNTUK DOT MATRIX CASCADE (BARU) ====
+// ===================================================================
 void MAX7219_Init(void);
-void MAX7219_Clear(void);
-void MAX7219_DisplayNumber(uint32_t number);
+void MAX7219_Send_Cascade(uint8_t reg, const uint8_t *data_array);
+void MAX7219_Clear_Cascade(void);
+void DrawCharacterOnMatrix(uint8_t matrix_buffer[8], char c);
 
 // Prototipe Driver 74HC595
 void HC595_Write(uint8_t data);
@@ -199,6 +209,49 @@ void ModbusMaster_WriteMultipleRegisters(uint8_t slave_id, uint16_t start_addr, 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// ===================================================================
+// ===         FONT DEFINITION UNTUK DOT MATRIX 8x8 (BARU)         ===
+// ===================================================================
+// Definisi font untuk karakter 0-9 dan ':'
+// Setiap karakter direpresentasikan oleh 8 byte, masing-masing byte untuk satu baris
+// Lebar karakter 5 piksel, tinggi 8 piksel
+// const uint8_t font[11][8] = {
+//    // 0
+//    {0b00111110, 0b01000010, 0b01000110, 0b01001010, 0b01010010, 0b01100010, 0b01000010, 0b00111110},
+//    // 1
+//    {0b00010000, 0b00110000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b00111000},
+//    // 2
+//    {0b00111110, 0b01000010, 0b00000010, 0b00000100, 0b00001000, 0b00010000, 0b01000000, 0b01111110},
+//    // 3
+//    {0b00111110, 0b01000010, 0b00000010, 0b00011100, 0b00000010, 0b00000010, 0b01000010, 0b00111110},
+//    // 4
+//    {0b00000100, 0b00001100, 0b00010100, 0b00100100, 0b01111110, 0b00000100, 0b00000100, 0b00000100},
+//    // 5
+//    {0b01111110, 0b01000000, 0b01000000, 0b01111100, 0b00000010, 0b00000010, 0b01000010, 0b00111110},
+//    // 6
+//    {0b00111110, 0b01000010, 0b01000000, 0b01111100, 0b01000010, 0b01000010, 0b01000010, 0b00111110},
+//    // 7
+//    {0b01111110, 0b01000010, 0b00000100, 0b00001000, 0b00010000, 0b00100000, 0b00100000, 0b00100000},
+//    // 8
+//    {0b00111110, 0b01000010, 0b01000010, 0b00111110, 0b01000010, 0b01000010, 0b01000010, 0b00111110},
+//    // 9
+//    {0b00111110, 0b01000010, 0b01000010, 0b01000010, 0b00111110, 0b00000010, 0b01000010, 0b00111110},
+//    // : (Colon) di tengah
+//    {0b00000000, 0b00000000, 0b00110000, 0b00110000, 0b00000000, 0b00110000, 0b00110000, 0b00000000}};
+
+const uint8_t font[11][8] = {
+  {0x7C, 0xC6, 0xCE, 0xDE, 0xF6, 0xE6, 0x7C, 0x00}, // U+0030 (0)
+  {0x30, 0x70, 0x30, 0x30, 0x30, 0x30, 0xFC, 0x00}, // U+0031 (1)
+  {0x78, 0xCC, 0x0C, 0x38, 0x60, 0xCC, 0xFC, 0x00}, // U+0032 (2)
+  {0x78, 0xCC, 0x0C, 0x38, 0x0C, 0xCC, 0x78, 0x00}, // U+0033 (3)
+  {0x1C, 0x3C, 0x6C, 0xCC, 0xFE, 0x0C, 0x1E, 0x00}, // U+0034 (4)
+  {0xFC, 0xC0, 0xF8, 0x0C, 0x0C, 0xCC, 0x78, 0x00}, // U+0035 (5)
+  {0x38, 0x60, 0xC0, 0xF8, 0xCC, 0xCC, 0x78, 0x00}, // U+0036 (6)
+  {0xFC, 0xCC, 0x0C, 0x30, 0x60, 0x60, 0x60, 0x00}, // U+0037 (7)
+  {0x78, 0xCC, 0xCC, 0x78, 0xCC, 0xCC, 0x78, 0x00}, // U+0038 (8)
+  {0x78, 0xCC, 0xCC, 0x7C, 0x0C, 0x30, 0x70, 0x00}, // U+0039 (9)
+  {0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00}  // U+003A (:)
+};
 /* USER CODE END 0 */
 
 /**
@@ -718,55 +771,107 @@ void HC595_Write(uint8_t data)
   HAL_GPIO_WritePin(HC595_LATCH_PORT, HC595_LATCH_PIN, GPIO_PIN_RESET);
 }
 
+// ===================================================================
+// ===     DRIVER MAX7219 UNTUK DOT MATRIX CASCADE (DIMODIFIKASI)    ===
+// ===================================================================
+
 /**
- * @brief Mengirim data ke MAX7219 melalui SPI.
- * @param reg: Alamat register MAX7219.
- * @param data: Data yang akan dikirim.
+ * @brief Mengirim data ke semua modul MAX7219 yang di-cascade.
+ * @param reg: Alamat register MAX7219 yang dituju (misal, baris 1-8).
+ * @param data_array: Array 8 byte. data_array[0] untuk modul 1, ..., data_array[7] untuk modul 8.
  */
-void MAX7219_Send(uint8_t reg, uint8_t data)
+void MAX7219_Send_Cascade(uint8_t reg, const uint8_t *data_array)
 {
-  uint8_t spi_data[2] = {reg, data};
-  HAL_GPIO_WritePin(MAX7219_CS_GPIO_Port, MAX7219_CS_Pin, GPIO_PIN_RESET);
-  HAL_SPI_Transmit(&hspi3, spi_data, 2, 100);
-  HAL_GPIO_WritePin(MAX7219_CS_GPIO_Port, MAX7219_CS_Pin, GPIO_PIN_SET);
+  uint8_t spi_data[2];
+
+  HAL_GPIO_WritePin(MAX7219_CS_PORT, MAX7219_CS_PIN, GPIO_PIN_RESET);
+
+  // Kirim data ke semua modul dalam satu siklus CS
+  // Data dikirim secara terbalik, karena sifat shift register.
+  // Data untuk modul terakhir (paling jauh dari MCU) dikirim pertama kali.
+  for (int i = NUM_MATRICES - 1; i >= 0; i--)
+  {
+    spi_data[0] = reg;
+    spi_data[1] = data_array[i];
+    HAL_SPI_Transmit(&hspi3, spi_data, 2, 100);
+  }
+
+  HAL_GPIO_WritePin(MAX7219_CS_PORT, MAX7219_CS_PIN, GPIO_PIN_SET);
 }
 
 /**
- * @brief Inisialisasi modul MAX7219.
+ * @brief Inisialisasi modul MAX7219 untuk mode dot matrix.
  */
 void MAX7219_Init(void)
 {
-  MAX7219_Send(MAX7219_REG_SCAN_LIMIT, 7);     // Tampilkan semua 8 digit
-  MAX7219_Send(MAX7219_REG_DECODE_MODE, 0xFF); // Gunakan BCD decode untuk semua digit
-  MAX7219_Send(MAX7219_REG_SHUTDOWN, 1);       // Nyalakan display
-  MAX7219_Send(MAX7219_REG_DISPLAY_TEST, 0);   // Matikan mode test
-  MAX7219_Send(MAX7219_REG_INTENSITY, 7);      // Atur kecerahan (0-15)
-  MAX7219_Clear();
+  uint8_t init_data[NUM_MATRICES] = {0}; // Buffer dummy untuk data
+
+  // Matikan display untuk sementara
+  memset(init_data, 0, NUM_MATRICES);
+  MAX7219_Send_Cascade(MAX7219_REG_SHUTDOWN, init_data);
+
+  // Matikan display test
+  memset(init_data, 0, NUM_MATRICES);
+  MAX7219_Send_Cascade(MAX7219_REG_DISPLAY_TEST, init_data);
+
+  // Set scan limit ke 8 baris (digit 0-7)
+  memset(init_data, 7, NUM_MATRICES);
+  MAX7219_Send_Cascade(MAX7219_REG_SCAN_LIMIT, init_data);
+
+  // Set mode ke No Decode untuk dot matrix
+  memset(init_data, 0x00, NUM_MATRICES); // <-- PERUBAHAN PENTING
+  MAX7219_Send_Cascade(MAX7219_REG_DECODE_MODE, init_data);
+
+  // Set kecerahan (0-15)
+  memset(init_data, 7, NUM_MATRICES);
+  MAX7219_Send_Cascade(MAX7219_REG_INTENSITY, init_data);
+
+  // Nyalakan kembali display
+  memset(init_data, 1, NUM_MATRICES);
+  MAX7219_Send_Cascade(MAX7219_REG_SHUTDOWN, init_data);
+
+  // Bersihkan layar
+  MAX7219_Clear_Cascade();
 }
 
 /**
- * @brief Membersihkan layar MAX7219.
+ * @brief Membersihkan semua layar dot matrix.
  */
-void MAX7219_Clear(void)
+void MAX7219_Clear_Cascade(void)
 {
+  uint8_t clear_data[NUM_MATRICES];
+  memset(clear_data, 0x00, NUM_MATRICES); // 0x00 untuk mematikan semua LED
   for (int i = 1; i <= 8; i++)
   {
-    MAX7219_Send(i, 0x0F); // 0x0F adalah blank di mode BCD
+    MAX7219_Send_Cascade(i, clear_data);
   }
 }
 
 /**
- * @brief Menampilkan angka desimal di MAX7219.
- * @param number: Angka yang akan ditampilkan (maks 8 digit).
+ * @brief Menggambar satu karakter ke buffer 8x8.
+ * @param matrix_buffer: Buffer 8 byte untuk satu matriks.
+ * @param c: Karakter yang akan digambar ('0'-'9' atau ':').
  */
-void MAX7219_DisplayNumber(uint32_t number)
+void DrawCharacterOnMatrix(uint8_t matrix_buffer[8], char c)
 {
-  for (int i = 1; i <= 8; i++)
+  int font_index;
+  if (c >= '0' && c <= '9')
   {
-    uint8_t digit = number % 10;
-    MAX7219_Send(i, digit);
-    number /= 10;
+    font_index = c - '0';
   }
+  else if (c == ':')
+  {
+    font_index = 10;
+  }
+  else
+  {
+    // Karakter tidak dikenal, gambar spasi (kosong)
+    memset(matrix_buffer, 0x00, 8);
+    return;
+  }
+
+  // Salin data font ke buffer matriks
+  memcpy(matrix_buffer, font[font_index], 8);
 }
 
 // ============== FUNGSI MODBUS =================
@@ -930,10 +1035,12 @@ void StartTaskTimerManager(void *argument)
 void StartTaskDisplayManager(void *argument)
 {
   /* USER CODE BEGIN StartTaskDisplayManager */
-  uint32_t max7219_value = 0;
   char lcd_buffer_line1[17];
   char lcd_buffer_line2[17];
   char time_format_buffer[10];
+
+  // Buffer untuk menampung data piksel dari 8 modul matriks
+  uint8_t display_buffer[NUM_MATRICES][8]; // [indeks_matriks][baris]
 
   uint8_t display_index = 0;
 
@@ -973,16 +1080,53 @@ void StartTaskDisplayManager(void *argument)
       // Update LED Indikator via 74HC595
       HC595_Write(1 << display_index);
 
-      // Siapkan data untuk MAX7219
-      max7219_value = timers[display_index].remaining_seconds;
+      // --- LOGIKA BARU UNTUK DOT MATRIX ---
+
+      // 1. Bersihkan buffer virtual
+      memset(display_buffer, 0x00, sizeof(display_buffer));
+
+      // 2. Siapkan string yang akan ditampilkan
       uint32_t h, m, s;
-      format_time_split(max7219_value, &h, &m, &s);
-      max7219_value = (display_index + 1) * 1000000 + h * 10000 + m * 100 + s;
+      format_time_split(timers[display_index].remaining_seconds, &h, &m, &s);
+
+      char display_string[10];
+      // Format: "T:HHMMSS" -> T=Timer #, H=Jam, M=Menit, S=Detik
+      sprintf(display_string, "%1d:%02lu%02lu%02lu", (int)(display_index + 1), h, m, s);
+      // Contoh hasil string: "1:012345"
+
+      // 3. Gambar string ke buffer virtual, karakter per karakter
+      // Matriks 0: Detik satuan
+      DrawCharacterOnMatrix(display_buffer[0], display_string[7]);
+      // Matriks 1: Detik puluhan
+      DrawCharacterOnMatrix(display_buffer[1], display_string[6]);
+      // Matriks 2: Menit satuan
+      DrawCharacterOnMatrix(display_buffer[2], display_string[5]);
+      // Matriks 3: Menit puluhan
+      DrawCharacterOnMatrix(display_buffer[3], display_string[4]);
+      // Matriks 4: Jam satuan
+      DrawCharacterOnMatrix(display_buffer[4], display_string[3]);
+      // Matriks 5: Jam puluhan
+      DrawCharacterOnMatrix(display_buffer[5], display_string[2]);
+      // Matriks 6: ':'
+      DrawCharacterOnMatrix(display_buffer[6], display_string[1]);
+      // Matriks 7: Timer #
+      DrawCharacterOnMatrix(display_buffer[7], display_string[0]);
 
       osMutexRelease(timerDataMutexHandle);
 
-      // --- Kirim data ke periferal setelah mutex dilepaskan ---
-      MAX7219_DisplayNumber(max7219_value);
+      // 4. Kirim buffer virtual ke semua matriks, baris per baris
+      uint8_t row_data[NUM_MATRICES];
+      for (int row = 0; row < 8; row++)
+      {
+        // Kumpulkan data untuk baris 'row' dari semua 8 matriks
+        for (int matrix = 0; matrix < NUM_MATRICES; matrix++)
+        {
+          row_data[matrix] = display_buffer[matrix][row];
+        }
+        // Kirim data untuk satu baris ke semua modul sekaligus
+        // Register 1 untuk baris 1, 2 untuk baris 2, dst.
+        MAX7219_Send_Cascade(row + 1, row_data);
+      }
 
       // Update LCD
       lcd_put_cur(0, 0);
@@ -1068,9 +1212,10 @@ void StartTaskInputHandler(void *argument)
             if (clicks != 0)
             { // Cukup satu klik untuk toggle
               timers[selected_timer_index].is_running = !timers[selected_timer_index].is_running;
-              if (timers[selected_timer_index].is_running) {
-            	  timers[selected_timer_index].is_finished = false;
-			}
+              if (timers[selected_timer_index].is_running)
+              {
+                timers[selected_timer_index].is_finished = false;
+              }
             }
             break;
           default:
