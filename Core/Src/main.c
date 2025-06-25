@@ -61,8 +61,10 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define NUM_TIMERS 8   // Jumlah total timer
-#define NUM_MATRICES 8 // Jumlah modul matriks yang di-cascade
+#define MAX_CURRENT_A 100 // Nilai arus maksimal dalam Ampere
+
+#define NUM_TIMERS 8          // Jumlah total timer
+#define NUM_MATRICES 8        // Jumlah modul matriks yang di-cascade
 #define JENIS_FONT FONT_TIPIS // Jenis font yang digunakan untuk tampilan FONT_TIPIS atau FONT_TEBAL
 
 // Definisi untuk driver MAX7219
@@ -93,7 +95,7 @@ typedef enum
 #define MODBUS_SLAVE_ID 1
 #define MODBUS_WRITE_MULTIPLE_REGS 0x10
 #define MODBUS_START_ADDRESS 0
-#define MODBUS_NUM_REGISTERS (NUM_TIMERS * 3)
+#define MODBUS_NUM_REGISTERS (NUM_TIMERS * 4) // 4 register per timer (jam, menit, detik, status)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -186,14 +188,6 @@ void format_time(char *buffer, uint32_t total_seconds);
 void format_time_split(uint32_t total_seconds, uint32_t *h, uint32_t *m, uint32_t *s);
 
 // Prototipe Driver MAX7219
-// void MAX7219_Send(uint8_t reg, uint8_t data);
-// void MAX7219_Init(void);
-// void MAX7219_Clear(void);
-// void MAX7219_DisplayNumber(uint32_t number);
-
-// ===================================================================
-// === PROTOTIPE DRIVER MAX7219 UNTUK DOT MATRIX CASCADE (BARU) ====
-// ===================================================================
 void MAX7219_Init(void);
 void MAX7219_Send_Cascade(uint8_t reg, const uint8_t *data_array);
 void MAX7219_Clear_Cascade(void);
@@ -710,13 +704,29 @@ static void MX_GPIO_Init(void)
  */
 void InitializeTimers(void)
 {
+  // Pertama, baca semua data dari flash ke dalam array timers
+  Flash_Read_Data(timers, NUM_TIMERS);
+
+  // Kemudian, validasi data yang dibaca
   if (osMutexAcquire(timerDataMutexHandle, osWaitForever) == osOK)
   {
     for (int i = 0; i < NUM_TIMERS; i++)
     {
-      timers[i].remaining_seconds = 0; // Default 0 detik
+      // Set status runtime ke nilai default
       timers[i].is_running = false;
       timers[i].is_finished = false;
+
+      // Cek jika data yang dibaca dari flash tidak valid (misal, 0xFFFFFFFF setelah erase)
+      if (timers[i].remaining_seconds == 0xFFFFFFFF)
+      {
+        timers[i].remaining_seconds = 0;
+        timers[i].current_mA = 0;
+      }
+      // Validasi arus
+      if (timers[i].current_mA > (MAX_CURRENT_A * 1000))
+      {
+        timers[i].current_mA = 0;
+      }
     }
     osMutexRelease(timerDataMutexHandle);
   }
@@ -996,6 +1006,7 @@ void StartTaskTimerManager(void *argument)
     // Kunci mutex sebelum mengakses data timer
     if (osMutexAcquire(timerDataMutexHandle, osWaitForever) == osOK)
     {
+      bool needs_saving = false;
       if (current_mode == MODE_RUN)
       {
         for (int i = 0; i < NUM_TIMERS; i++)
@@ -1009,10 +1020,17 @@ void StartTaskTimerManager(void *argument)
               timers[i].is_finished = true; // Tandai sebagai selesai
               // Beri sinyal ke task buzzer bahwa timer telah selesai
               osSemaphoreRelease(buzzerSemaphoreHandle);
+              needs_saving = true;
             }
           }
         }
       }
+      // Simpan ke flash JIKA ada perubahan
+      if (needs_saving)
+      {
+        Flash_Write_Data(timers, NUM_TIMERS);
+      }
+
       // Lepaskan mutex setelah selesai
       osMutexRelease(timerDataMutexHandle);
     }
@@ -1033,6 +1051,7 @@ void StartTaskDisplayManager(void *argument)
   char lcd_buffer_line1[17];
   char lcd_buffer_line2[17];
   char time_format_buffer[10];
+  char current_format_buffer[10];
 
   // Buffer untuk menampung data piksel dari 8 modul matriks
   uint8_t display_buffer[NUM_MATRICES][8]; // [indeks_matriks][baris]
@@ -1044,11 +1063,13 @@ void StartTaskDisplayManager(void *argument)
   {
     if (osMutexAcquire(timerDataMutexHandle, osWaitForever) == osOK)
     {
+      uint16_t current_val = timers[display_index].current_mA;
       if (current_mode == MODE_RUN)
       {
         // Di mode RUN, tampilkan timer yang dipilih oleh rotary encoder
         display_index = run_mode_display_index;
-        sprintf(lcd_buffer_line1, "RUN MODE   T:%d", display_index + 1);
+
+        sprintf(lcd_buffer_line1, "T%d: %02u.%03uA", display_index + 1, current_val / 1000, current_val % 1000);
 
         format_time(time_format_buffer, timers[display_index].remaining_seconds);
         sprintf(lcd_buffer_line2, "%s %s", time_format_buffer,
@@ -1060,11 +1081,16 @@ void StartTaskDisplayManager(void *argument)
         display_index = selected_timer_index;
         sprintf(lcd_buffer_line1, "SET MODE   T:%d", display_index + 1);
 
-        // Tampilkan kursor `^` untuk menunjukkan apa yang sedang diedit
+        // Tampilkan nilai arus dalam format XX.XXX A
+        sprintf(current_format_buffer, "%02u.%03u A", current_val / 1000, current_val % 1000);
+
+        // Tampilkan waktu dalam format HH:MM:SS
         format_time(time_format_buffer, timers[display_index].remaining_seconds);
 
         // Tulis waktu di atasnya
-        sprintf(lcd_buffer_line2, "%s %s", time_format_buffer,
+        sprintf(lcd_buffer_line2, "%s %s",
+                edit_focus == EDIT_FOCUS_CURRENT ? current_format_buffer
+                                                 : time_format_buffer,
                 edit_focus == EDIT_FOCUS_HOUR      ? "HOUR"
                 : edit_focus == EDIT_FOCUS_MINUTE  ? "MINUTE"
                 : edit_focus == EDIT_FOCUS_SECOND  ? "SECOND"
@@ -1084,7 +1110,7 @@ void StartTaskDisplayManager(void *argument)
       uint32_t h, m, s;
       format_time_split(timers[display_index].remaining_seconds, &h, &m, &s);
 
-      char display_string[10];
+      char display_string[36];
       // Format: "T:HHMMSS" -> T=Timer #, H=Jam, M=Menit, S=Detik
       sprintf(display_string, "%1d:%02lu%02lu%02lu", (int)(display_index + 1), h, m, s);
       // Contoh hasil string: "1:012345"
@@ -1189,6 +1215,8 @@ void StartTaskInputHandler(void *argument)
         else
         { // MODE_SET
           uint32_t *p_seconds = &timers[selected_timer_index].remaining_seconds;
+          uint16_t *p_current = &timers[selected_timer_index].current_mA;
+
           uint32_t h, m, s;
           format_time_split(*p_seconds, &h, &m, &s);
 
@@ -1203,6 +1231,15 @@ void StartTaskInputHandler(void *argument)
           case EDIT_FOCUS_SECOND:
             s = (s + clicks + 60) % 60; // Batasi 0-59
             break;
+          case EDIT_FOCUS_CURRENT:
+          {
+            int32_t new_current = *p_current + (clicks * 10);
+            if (new_current < 0)
+              new_current = 0;
+            if (new_current > (MAX_CURRENT_A * 1000))
+              new_current = MAX_CURRENT_A * 1000;
+            *p_current = (uint16_t)new_current;
+          }
           case EDIT_FOCUS_START_STOP:
             if (clicks != 0)
             { // Cukup satu klik untuk toggle
@@ -1258,6 +1295,8 @@ void StartTaskInputHandler(void *argument)
             if (edit_focus == EDIT_FOCUS_EXIT)
             {
               current_mode = MODE_RUN; // Simpan dan keluar
+              // Simpan semua perubahan ke Flash saat keluar dari mode SET
+              Flash_Write_Data(timers, NUM_TIMERS);
             }
           }
           osMutexRelease(timerDataMutexHandle);
@@ -1275,7 +1314,8 @@ void StartTaskInputHandler(void *argument)
         if (current_mode == MODE_SET)
         {
           current_mode = MODE_RUN; // Batalkan dan keluar
-                                   // Opsional: bisa ditambahkan logika untuk mengembalikan nilai timer seperti sebelum diedit
+          // Batalkan perubahan dengan memuat ulang semua data dari Flash
+          Flash_Read_Data(timers, NUM_TIMERS);
         }
         osMutexRelease(timerDataMutexHandle);
       }
@@ -1341,23 +1381,20 @@ void StartTaskModbusMaster(void *argument)
       for (int i = 0; i < NUM_TIMERS; i++)
       {
         uint16_t status = 0; // Default: STOP
-
         if (timers[i].is_finished)
-        {
           status = 2; // FINISHED
-        }
         else if (timers[i].is_running)
-        {
           status = 1; // RUNNING
-        }
 
         uint32_t val = timers[i].remaining_seconds;
         uint16_t val_low = val & 0xFFFF;
         uint16_t val_high = (val >> 16) & 0xFFFF;
+        uint16_t current_val = timers[i].current_mA;
 
-        modbus_data_buffer[i * 3 + 0] = val_low;
-        modbus_data_buffer[i * 3 + 1] = val_high;
-        modbus_data_buffer[i * 3 + 2] = status;
+        modbus_data_buffer[i * 4 + 0] = val_low;
+        modbus_data_buffer[i * 4 + 1] = val_high;
+        modbus_data_buffer[i * 4 + 2] = status;
+        modbus_data_buffer[i * 4 + 3] = current_val;
       }
       osMutexRelease(timerDataMutexHandle);
 
